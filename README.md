@@ -4,7 +4,7 @@
 
 | Backend | Toolchain | Targets |
 |---|---|---|
-| CUDA 12.8.1 | `nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04` Docker | sm75 / 80 / 86 / 89 / 90 / 100 / 120 |
+| CUDA 12.8.1 | `nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04` Docker | sm52 / 75 / 80 / 86 / 89 / 90 / 100 / 120 |
 | ROCm 7 (gfx110x) | TheRock nightly | gfx1100 / gfx1101 / gfx1102 / gfx1103 |
 | Vulkan | Vulkan SDK | (ICD provided by the host GPU driver) |
 | CPU | gcc/clang | `GGML_CPU_ALL_VARIANTS` (runtime auto-selects the best SIMD) |
