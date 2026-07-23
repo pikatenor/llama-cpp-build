@@ -1,0 +1,25 @@
+# Build artifacts
+binaries/
+artifacts/
+release-assets/
+build/
+*.tar.gz
+*.zip
+
+# llama.cpp clone (local builds)
+llama.cpp/
+therock-dist-*.tar.gz
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
