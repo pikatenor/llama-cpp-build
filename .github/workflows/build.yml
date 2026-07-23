@@ -1,0 +1,370 @@
+name: Build llama.cpp multi-backend
+
+# Auto-builds llama.cpp (latest release tag of ggml-org/llama.cpp) as a single
+# set of binaries with CUDA 12.8.1, ROCm gfx110x and Vulkan backends compiled
+# as SEPARATE dynamic plugins (GGML_BACKEND_DL=ON), then bundles them into one
+# Linux x86_64 tarball published to a GitHub Release. Switch GPU backends at
+# runtime via run.sh <cuda|rocm|vulkan|all> (Ollama-style).
+
+on:
+  schedule:
+    - cron: '30 0 * * *' # daily 00:30 UTC
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Force a rebuild even if a Release for this tag already exists'
+        type: boolean
+        default: false
+      llama_tag:
+        description: 'Specific llama.cpp tag/commit (empty = latest release)'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  LLAMA_REPO: ggml-org/llama.cpp
+  CUDA_IMAGE: nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
+  CUDA_ARCHS: '75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;100-virtual;120-virtual'
+  ROCM_S3_TARGET: gfx110X-all
+  GPU_TARGETS: 'gfx1100;gfx1101;gfx1102;gfx1103'
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ─────────────────────────── resolve upstream version ───────────────────────────
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      release_hash: ${{ steps.resolve.outputs.release_hash }}
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - name: Resolve llama.cpp tag + commit
+        id: resolve
+        run: |
+          if [ -n "${{ inputs.llama_tag }}" ]; then
+            tag='${{ inputs.llama_tag }}'
+          else
+            tag=$(curl -fsSL "https://api.github.com/repos/${LLAMA_REPO}/releases/latest" | jq -r '.tag_name')
+          fi
+          [ -n "$tag" ] && [ "$tag" != "null" ] || { echo "could not resolve llama.cpp tag" >&2; exit 1; }
+          # Resolve tag -> commit sha (works for lightweight & annotated tags).
+          hash=$(git ls-remote "https://github.com/${LLAMA_REPO}.git" "refs/tags/${tag}^{}" | awk '{print $1}')
+          [ -n "$hash" ] || hash=$(git ls-remote "https://github.com/${LLAMA_REPO}.git" "refs/tags/${tag}" | awk '{print $1}')
+          echo "tag=$tag commit=$hash"
+          echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_hash=$hash" >> "$GITHUB_OUTPUT"
+      - name: Check if build is needed
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag='${{ steps.resolve.outputs.release_tag }}'
+          if gh release view "$tag" >/dev/null 2>&1; then
+            if [ '${{ inputs.force_build }}' = 'true' ]; then
+              echo "Release $tag exists but force_build=true -> rebuild"
+              echo "should_build=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "Release $tag already exists -> skip (set force_build to rebuild)"
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "No release for $tag yet -> build"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ─────────────────────────── frontend + CPU backend ───────────────────────────
+  build-base:
+    needs: resolve-version
+    if: needs.resolve-version.outputs.should_build == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: bash scripts/free-disk-space.sh
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build build-essential patchelf ca-certificates
+      - name: Clone llama.cpp
+        run: |
+          git clone --depth 1 --branch "${{ needs.resolve-version.outputs.release_tag }}" \
+              "https://github.com/${LLAMA_REPO}.git" llama.cpp \
+            || (git clone "https://github.com/${LLAMA_REPO}.git" llama.cpp \
+                && git -C llama.cpp checkout "${{ needs.resolve-version.outputs.release_hash }}")
+      - name: Configure & build
+        run: |
+          cmake -S llama.cpp -B build -G Ninja \
+            -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON \
+            -DGGML_CPU=ON -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_CUDA=OFF -DGGML_HIP=OFF -DGGML_VULKAN=OFF \
+            -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_SERVER=ON
+          cmake --build build --config Release -j"$(nproc)"
+      - name: Stage frontend + CPU backend
+        run: |
+          mkdir -p stage/bin
+          cp -a build/bin/llama-* stage/bin/
+          # core libs (libggml.so / libggml-base.so / libllama.so) + CPU backend
+          # plugins (libggml-cpu*.so variants). CUDA/HIP/Vulkan are OFF here, so
+          # this glob never captures other backends.
+          cp -a build/bin/libggml*.so* build/bin/libllama*.so* stage/bin/
+          find stage/bin -type f -executable ! -name "*.so*" -exec strip {} \; 2>/dev/null || true
+          for f in stage/bin/*.so* stage/bin/llama-*; do
+            [ -f "$f" ] && [ ! -L "$f" ] && patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true
+          done
+          ls -la stage/bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: base-linux-x64
+          path: stage/bin/
+          retention-days: 3
+
+  # ─────────────────────────── CUDA backend ───────────────────────────
+  build-cuda:
+    needs: resolve-version
+    if: needs.resolve-version.outputs.should_build == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: bash scripts/free-disk-space.sh
+      - name: Clone llama.cpp
+        run: |
+          git clone --depth 1 --branch "${{ needs.resolve-version.outputs.release_tag }}" \
+              "https://github.com/${LLAMA_REPO}.git" llama.cpp \
+            || (git clone "https://github.com/${LLAMA_REPO}.git" llama.cpp \
+                && git -C llama.cpp checkout "${{ needs.resolve-version.outputs.release_hash }}")
+      - name: Build CUDA backend in Docker
+        run: |
+          mkdir -p stage
+          docker run --rm \
+            -v "$PWD":/work -w /work/llama.cpp \
+            -e CUDA_ARCHS -e CUDA_STAGE=/work/stage \
+            "${CUDA_IMAGE}" \
+            bash /work/scripts/build-cuda-inner.sh
+          sudo chown -R "$(id -u):$(id -g)" stage llama.cpp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-cuda-linux-x64
+          path: stage/
+          retention-days: 3
+
+  # ─────────────────────────── ROCm backend ───────────────────────────
+  build-rocm:
+    needs: resolve-version
+    if: needs.resolve-version.outputs.should_build == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: bash scripts/free-disk-space.sh
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build unzip curl jq patchelf
+      - name: Download & extract TheRock ROCm
+        run: |
+          { IFS= read -r ROCM_URL; IFS= read -r ROCM_VERSION; } < <(./scripts/detect-rocm-nightly.sh --target "${ROCM_S3_TARGET}" --version latest)
+          echo "ROCm ${ROCM_VERSION} @ ${ROCM_URL}"
+          echo "ROCM_VERSION=${ROCM_VERSION}" >> "$GITHUB_ENV"
+          sudo mkdir -p /opt/rocm
+          curl -sL "$ROCM_URL" | sudo tar --use-compress-program=gzip -xf - -C /opt/rocm --strip-components=1
+      - name: Set ROCm environment
+        run: |
+          echo "HIP_PATH=/opt/rocm" >> "$GITHUB_ENV"
+          echo "ROCM_PATH=/opt/rocm" >> "$GITHUB_ENV"
+          echo "HIP_PLATFORM=amd" >> "$GITHUB_ENV"
+          echo "HIP_CLANG_PATH=/opt/rocm/llvm/bin" >> "$GITHUB_ENV"
+          echo "HIP_INCLUDE_PATH=/opt/rocm/include" >> "$GITHUB_ENV"
+          echo "HIP_LIB_PATH=/opt/rocm/lib" >> "$GITHUB_ENV"
+          echo "HIP_DEVICE_LIB_PATH=/opt/rocm/lib/llvm/amdgcn/bitcode" >> "$GITHUB_ENV"
+          echo "/opt/rocm/bin:/opt/rocm/llvm/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:/opt/rocm/llvm/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "CPATH=/opt/rocm/include${CPATH:+:$CPATH}" >> "$GITHUB_ENV"
+      - name: Clone llama.cpp
+        run: |
+          git clone --depth 1 --branch "${{ needs.resolve-version.outputs.release_tag }}" \
+              "https://github.com/${LLAMA_REPO}.git" llama.cpp \
+            || (git clone "https://github.com/${LLAMA_REPO}.git" llama.cpp \
+                && git -C llama.cpp checkout "${{ needs.resolve-version.outputs.release_hash }}")
+      - name: Configure & build
+        run: |
+          cmake -S llama.cpp -B build -G Ninja \
+            -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang \
+            -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
+            -DCMAKE_CXX_FLAGS="-I/opt/rocm/include" \
+            -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON \
+            -DGGML_HIP=ON -DGGML_CPU=OFF \
+            -DGPU_TARGETS="${GPU_TARGETS}" \
+            -DGGML_OPENMP=OFF -DGGML_CUDA_FORCE_CUBLAS=OFF -DGGML_RPC=ON \
+            -DGGML_HIP_ROCWMMA_FATTN=OFF -DLLAMA_BUILD_BORINGSSL=ON \
+            -DGGML_NATIVE=OFF -DGGML_STATIC=OFF \
+            -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DCMAKE_SYSTEM_NAME=Linux
+          cmake --build build --config Release -j"$(nproc)"
+      - name: Stage ROCm backend + bundled runtime
+        run: |
+          mkdir -p stage
+          cp -a build/bin/libggml-hip*.so* stage/ || { echo "libggml-hip backend not produced" >&2; ls build/bin/ | head; exit 1; }
+          # ROCm runtime libs (regenerate with: utils/gather_required_libs.py --rocm-dir /opt/rocm --dest-dir stage)
+          for lib in \
+              libhipblas librocblas libamdhip64 librocsolver libroctx64 libhipblaslt \
+              librocprofiler-register libamd_comgr libamd_comgr_loader libhsa-runtime64 \
+              librocroller librocm_kpack; do
+            cp -a /opt/rocm/lib/${lib}.so* stage/ 2>/dev/null || echo "  (no $lib)"
+          done
+          for lib in \
+              librocm_sysdeps_liblzma librocm_sysdeps_numa librocm_sysdeps_z \
+              librocm_sysdeps_zstd librocm_sysdeps_elf librocm_sysdeps_drm \
+              librocm_sysdeps_drm_amdgpu librocm_sysdeps_bz2; do
+            cp -a /opt/rocm/lib/rocm_sysdeps/lib/${lib}.so* stage/ 2>/dev/null || echo "  (no $lib)"
+          done
+          cp -a /opt/rocm/lib/llvm/lib/libLLVM.so* stage/ 2>/dev/null || true
+          cp -a /opt/rocm/lib/llvm/lib/libclang-cpp.so* stage/ 2>/dev/null || true
+          # rocblas / hipblaslt kernels (looked up next to their .so at runtime)
+          mkdir -p stage/rocblas/library stage/hipblaslt/library
+          cp -an /opt/rocm/lib/rocblas/library/* stage/rocblas/library/ 2>/dev/null || true
+          cp -an /opt/rocm/lib/hipblaslt/library/* stage/hipblaslt/library/ 2>/dev/null || true
+          for f in stage/*.so* stage/libggml-hip*.so*; do
+            [ -f "$f" ] && [ ! -L "$f" ] && patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-rocm-linux-x64
+          path: stage/
+          retention-days: 3
+
+  # ─────────────────────────── Vulkan backend ───────────────────────────
+  build-vulkan:
+    needs: resolve-version
+    if: needs.resolve-version.outputs.should_build == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: bash scripts/free-disk-space.sh
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build build-essential patchelf libvulkan-dev
+      - name: Clone llama.cpp
+        run: |
+          git clone --depth 1 --branch "${{ needs.resolve-version.outputs.release_tag }}" \
+              "https://github.com/${LLAMA_REPO}.git" llama.cpp \
+            || (git clone "https://github.com/${LLAMA_REPO}.git" llama.cpp \
+                && git -C llama.cpp checkout "${{ needs.resolve-version.outputs.release_hash }}")
+      - name: Configure & build
+        run: |
+          cmake -S llama.cpp -B build -G Ninja \
+            -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON \
+            -DGGML_VULKAN=ON -DGGML_CPU=OFF -DGGML_CUDA=OFF -DGGML_HIP=OFF \
+            -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release -j"$(nproc)"
+      - name: Stage Vulkan backend + loader
+        run: |
+          mkdir -p stage
+          cp -a build/bin/libggml-vulkan*.so* stage/ || { echo "libggml-vulkan backend not produced" >&2; ls build/bin/ | head; exit 1; }
+          cp -a /usr/lib/x86_64-linux-gnu/libvulkan.so* stage/ 2>/dev/null || echo "  (no system libvulkan)"
+          for f in stage/*.so*; do
+            [ -f "$f" ] && [ ! -L "$f" ] && patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-vulkan-linux-x64
+          path: stage/
+          retention-days: 3
+
+  # ─────────────────────────── assemble package ───────────────────────────
+  package:
+    needs: [resolve-version, build-base, build-cuda, build-rocm, build-vulkan]
+    if: needs.resolve-version.outputs.should_build == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble package tree
+        run: |
+          TAG="${{ needs.resolve-version.outputs.release_tag }}"
+          PKG="llama-cpp-build-${TAG}-linux-x64"
+          mkdir -p "$PKG/bin" "$PKG/backends/cuda" "$PKG/backends/rocm" "$PKG/backends/vulkan"
+
+          cp -a artifacts/base-linux-x64/.          "$PKG/bin/"
+          cp -a artifacts/backend-cuda-linux-x64/.   "$PKG/backends/cuda/"
+          cp -a artifacts/backend-rocm-linux-x64/.   "$PKG/backends/rocm/"
+          cp -a artifacts/backend-vulkan-linux-x64/. "$PKG/backends/vulkan/"
+
+          cp scripts/run.sh "$PKG/run.sh"
+          chmod +x "$PKG/run.sh"
+          chmod +x "$PKG/bin"/llama-* 2>/dev/null || true
+
+          cat > "$PKG/VERSION.txt" <<EOF
+          llama.cpp: ${TAG} (${{ needs.resolve-version.outputs.release_hash }})
+          built:     ${RUNNER_OS}/${RUNNER_ARCH} (GitHub Actions)
+          CUDA:      12.8.1 (sm75/80/86/89/90/100/120)
+          ROCm:      ${ROCM_VERSION:-n/a} (gfx1100/1101/1102/1103)
+          Vulkan:    bundled loader (ICD by host driver)
+          EOF
+
+          cp README.md "$PKG/README.txt" 2>/dev/null || true
+
+          echo "=== package tree ==="
+          find "$PKG" -maxdepth 2 | sort | sed 's#^#  #'
+
+          echo "=== smoke test (CPU backend, no GPU needed) ==="
+          ( cd "$PKG" && ./run.sh cpu --version ) || { echo "smoke: llama-server failed to start" >&2; exit 1; }
+          ( cd "$PKG" && ./run.sh cpu --list-devices ) || true
+      - name: Create tarball
+        run: |
+          TAG="${{ needs.resolve-version.outputs.release_tag }}"
+          PKG="llama-cpp-build-${TAG}-linux-x64"
+          tar -czf "${PKG}.tar.gz" "$PKG"
+          ls -lh "${PKG}.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-linux-x64
+          path: llama-cpp-build-*.tar.gz
+          retention-days: 14
+
+  # ─────────────────────────── publish release ───────────────────────────
+  release:
+    needs: [resolve-version, package]
+    if: needs.resolve-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-linux-x64
+          path: release-assets
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve-version.outputs.release_tag }}
+          name: llama.cpp ${{ needs.resolve-version.outputs.release_tag }} multi-backend (CUDA+ROCm+Vulkan)
+          body: |
+            Auto-built from [${{ env.LLAMA_REPO }}@${{ needs.resolve-version.outputs.release_tag }}](https://github.com/${{ env.LLAMA_REPO }}/releases/tag/${{ needs.resolve-version.outputs.release_tag }}).
+
+            One `llama-server` with swappable backends (Linux x86_64):
+            - **CUDA 12.8.1** backend (sm75/80/86/89/90/100/120)
+            - **ROCm gfx110x** backend (gfx1100/1101/1102/1103)
+            - **Vulkan** backend
+            - **CPU** backend (all SIMD variants)
+
+            ```sh
+            tar xzf llama-cpp-build-${{ needs.resolve-version.outputs.release_tag }}-linux-x64.tar.gz
+            cd llama-cpp-build-*-linux-x64
+            ./run.sh cuda   -m model.gguf -ngl 99   # NVIDIA
+            ./run.sh rocm   -m model.gguf -ngl 99   # AMD gfx110x
+            ./run.sh vulkan -m model.gguf -ngl 99   # Vulkan
+            ./run.sh all    --list-devices
+            ```
+          files: release-assets/*.tar.gz
