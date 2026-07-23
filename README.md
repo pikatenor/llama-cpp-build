@@ -24,8 +24,13 @@ llama-cpp-build-<tag>-linux-x64/
 
 ## Usage
 
+Each backend ships as a separate release asset (so no single file exceeds GitHub's 2 GiB limit). Download **base** plus the backend(s) you need and extract them into the same directory:
+
 ```sh
-tar xzf llama-cpp-build-<tag>-linux-x64.tar.gz
+tar xzf llama-cpp-build-<tag>-base-linux-x64.tar.gz
+tar xzf llama-cpp-build-<tag>-cuda-linux-x64.tar.gz    # NVIDIA
+tar xzf llama-cpp-build-<tag>-rocm-linux-x64.tar.gz    # AMD gfx110x
+tar xzf llama-cpp-build-<tag>-vulkan-linux-x64.tar.gz  # optional
 cd llama-cpp-build-<tag>-linux-x64
 
 # Start with the chosen backend (arguments are passed directly to llama-server)

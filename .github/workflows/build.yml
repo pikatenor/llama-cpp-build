@@ -329,16 +329,23 @@ jobs:
           echo "=== smoke test (CPU backend, no GPU needed) ==="
           ( cd "$PKG" && ./run.sh cpu --version ) || { echo "smoke: llama-server failed to start" >&2; exit 1; }
           ( cd "$PKG" && ./run.sh cpu --list-devices ) || true
-      - name: Create tarball
+      - name: Create per-backend tarballs
         run: |
           TAG="${{ needs.resolve-version.outputs.release_tag }}"
           PKG="llama-cpp-build-${TAG}-linux-x64"
-          tar -czf "${PKG}.tar.gz" "$PKG"
-          ls -lh "${PKG}.tar.gz"
+          # Split into per-backend tarballs so each stays under GitHub's 2 GiB
+          # release-asset cap (the CUDA runtime alone is ~1 GiB). Every tarball
+          # shares the same top-level "$PKG/" prefix, so extracting the desired
+          # subset into one directory reassembles the package.
+          tar -czf "llama-cpp-build-${TAG}-base-linux-x64.tar.gz"   "${PKG}/bin" "${PKG}/run.sh" "${PKG}/VERSION.txt" "${PKG}/README.txt"
+          tar -czf "llama-cpp-build-${TAG}-cuda-linux-x64.tar.gz"   "${PKG}/backends/cuda"
+          tar -czf "llama-cpp-build-${TAG}-rocm-linux-x64.tar.gz"   "${PKG}/backends/rocm"
+          tar -czf "llama-cpp-build-${TAG}-vulkan-linux-x64.tar.gz" "${PKG}/backends/vulkan"
+          ls -lh llama-cpp-build-*.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: package-linux-x64
-          path: llama-cpp-build-*.tar.gz
+          path: llama-cpp-build-*-linux-x64.tar.gz
           retention-days: 14
 
   # ─────────────────────────── publish release ───────────────────────────
@@ -361,18 +368,24 @@ jobs:
           body: |
             Auto-built from [${{ env.LLAMA_REPO }}@${{ needs.resolve-version.outputs.release_tag }}](https://github.com/${{ env.LLAMA_REPO }}/releases/tag/${{ needs.resolve-version.outputs.release_tag }}).
 
-            One `llama-server` with swappable backends (Linux x86_64):
-            - **CUDA 12.8.1** backend (sm52/75/80/86/89/90/100/120)
-            - **ROCm gfx110x** backend (gfx1100/1101/1102/1103)
-            - **Vulkan** backend
-            - **CPU** backend (all SIMD variants)
+            One `llama-server` with swappable backends (Linux x86_64). Each backend
+            ships as a separate asset (so no single file hits GitHub's 2 GiB cap) —
+            download **base** plus the backend(s) you need and extract them into the
+            same directory:
+
+            - `*-base-linux-x64.tar.gz` — llama-server + CPU backend
+            - `*-cuda-linux-x64.tar.gz` — CUDA 12.8.1 backend (sm52/75/80/86/89/90/100/120) + cuBLAS runtime
+            - `*-rocm-linux-x64.tar.gz` — ROCm gfx110x backend (gfx1100/1101/1102/1103) + ROCm runtime
+            - `*-vulkan-linux-x64.tar.gz` — Vulkan backend + loader
 
             ```sh
-            tar xzf llama-cpp-build-${{ needs.resolve-version.outputs.release_tag }}-linux-x64.tar.gz
-            cd llama-cpp-build-*-linux-x64
-            ./run.sh cuda   -m model.gguf -ngl 99   # NVIDIA
-            ./run.sh rocm   -m model.gguf -ngl 99   # AMD gfx110x
-            ./run.sh vulkan -m model.gguf -ngl 99   # Vulkan
-            ./run.sh all    --list-devices
+            TAG=${{ needs.resolve-version.outputs.release_tag }}
+            tar xzf llama-cpp-build-$TAG-base-linux-x64.tar.gz
+            tar xzf llama-cpp-build-$TAG-cuda-linux-x64.tar.gz    # NVIDIA
+            tar xzf llama-cpp-build-$TAG-rocm-linux-x64.tar.gz    # AMD gfx110x
+            tar xzf llama-cpp-build-$TAG-vulkan-linux-x64.tar.gz  # optional
+            cd llama-cpp-build-$TAG-linux-x64
+            ./run.sh cuda|rocm|vulkan -m model.gguf -ngl 99
+            ./run.sh all --list-devices
             ```
           files: release-assets/*.tar.gz
