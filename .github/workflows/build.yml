@@ -251,7 +251,7 @@ jobs:
       - name: Free disk space
         run: bash scripts/free-disk-space.sh
       - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build build-essential patchelf libvulkan-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build build-essential patchelf libvulkan-dev glslc
       - name: Clone llama.cpp
         run: |
           git clone --depth 1 --branch "${{ needs.resolve-version.outputs.release_tag }}" \
