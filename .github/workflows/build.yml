@@ -242,16 +242,21 @@ jobs:
           retention-days: 3
 
   # ─────────────────────────── Vulkan backend ───────────────────────────
+  # NOTE: ubuntu-24.04, not 22.04 — the `glslc` SPIR-V compiler package is only
+  # available from noble onward (jammy lacks it). Matches upstream
+  # ggml-org/llama.cpp's own Vulkan CI. noninteractive + timeout guard against
+  # apt stalls.
   build-vulkan:
     needs: resolve-version
     if: needs.resolve-version.outputs.should_build == 'true'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Free disk space
         run: bash scripts/free-disk-space.sh
       - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build build-essential patchelf libvulkan-dev glslc
+        timeout-minutes: 15
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cmake ninja-build build-essential patchelf libvulkan-dev glslc spirv-headers
       - name: Clone llama.cpp
         run: |
           git clone --depth 1 --branch "${{ needs.resolve-version.outputs.release_tag }}" \
