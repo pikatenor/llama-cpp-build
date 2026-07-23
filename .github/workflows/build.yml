@@ -114,10 +114,11 @@ jobs:
         run: |
           mkdir -p stage/bin
           cp -a build/bin/llama-* stage/bin/
-          # core libs (libggml.so / libggml-base.so / libllama.so) + CPU backend
-          # plugins (libggml-cpu*.so variants). CUDA/HIP/Vulkan are OFF here, so
-          # this glob never captures other backends.
-          cp -a build/bin/libggml*.so* build/bin/libllama*.so* stage/bin/
+          # Bundle EVERY shared lib the build produced (libggml.so, libggml-base.so,
+          # libllama.so, libllama-server-impl.so, libmtmd.so, libggml-cpu*.so, ...).
+          # The frontend transitively needs all of them, so grab the whole set.
+          # CUDA/HIP/Vulkan are OFF in this job, so no vendor backends get bundled.
+          cp -a build/bin/*.so* stage/bin/
           find stage/bin -type f -executable ! -name "*.so*" -exec strip {} \; 2>/dev/null || true
           for f in stage/bin/*.so* stage/bin/llama-*; do
             [ -f "$f" ] && [ ! -L "$f" ] && patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true
