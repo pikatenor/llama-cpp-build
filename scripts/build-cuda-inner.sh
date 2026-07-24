@@ -36,8 +36,11 @@ echo ">>> staging CUDA backend plugin"
 cp -a build/bin/libggml-cuda*.so* "$STAGE/" || { echo "libggml-cuda backend not produced" >&2; ls -la build/bin/ | head; exit 1; }
 
 echo ">>> bundling CUDA runtime next to the backend"
-for lib in libcudart.so libcublas.so libcublasLt.so; do
-  cp -a /usr/local/cuda/lib64/${lib}* "$STAGE/" 2>/dev/null || echo "  (no $lib in cuda lib64)"
+# Copy the real file content under the SONAME names the loader looks up, dereferencing
+# the symlinks. Otherwise actions/upload-artifact follows the .so -> .so.12 -> .so.12.x
+# chain and uploads the (huge) real file several times, bloating the tarball ~3x.
+for lib in libcudart.so.12 libcublas.so.12 libcublasLt.so.12; do
+  cp -L /usr/local/cuda/lib64/$lib "$STAGE/$lib" 2>/dev/null || echo "  (no $lib in cuda lib64)"
 done
 
 echo ">>> setting rpath \$ORIGIN on staged libs"
