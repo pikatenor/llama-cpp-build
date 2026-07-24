@@ -35,12 +35,20 @@ echo ">>> staging CUDA backend plugin"
 # Backend plugin (dlopen'd by filename: libggml-cuda-*.so). cp -a keeps symlinks/SONAME files.
 cp -a build/bin/libggml-cuda*.so* "$STAGE/" || { echo "libggml-cuda backend not produced" >&2; ls -la build/bin/ | head; exit 1; }
 
-echo ">>> bundling CUDA runtime next to the backend"
-# Copy the real file content under the SONAME names the loader looks up, dereferencing
-# the symlinks. Otherwise actions/upload-artifact follows the .so -> .so.12 -> .so.12.x
-# chain and uploads the (huge) real file several times, bloating the tarball ~3x.
-for lib in libcudart.so.12 libcublas.so.12 libcublasLt.so.12; do
-  cp -L /usr/local/cuda/lib64/$lib "$STAGE/$lib" 2>/dev/null || echo "  (no $lib in cuda lib64)"
+echo ">>> bundling CUDA runtime deps of the backend"
+# Auto-discover every runtime dep of the CUDA backend with ldd (cuBLAS, cuBLASLt,
+# cudart, NCCL, ...) and copy the real file content under each SONAME name (no
+# symlinks, so upload-artifact cannot triplicate them). Skip link-only stubs and
+# core system libs; the NVIDIA driver (libcuda.so.1) is provided by the host.
+ldd build/bin/libggml-cuda*.so* | awk '/=> \// {print $1, $3}' | sort -u | \
+while read -r soname path; do
+  case "$soname" in
+    libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|libresolv.so.*|libstdc++.so.*|libgcc_s.so.*|libgomp.so.*|ld-linux*) ;;
+    *) case "$path" in
+         */stubs/*) ;;
+         *) cp -aL "$path" "$STAGE/$soname" 2>/dev/null || true ;;
+       esac ;;
+  esac
 done
 
 echo ">>> setting rpath \$ORIGIN on staged libs"
