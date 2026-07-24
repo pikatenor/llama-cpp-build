@@ -27,9 +27,10 @@ case "$vendor" in
   *) vendor="all" ;;
 esac
 
-# Remove any GPU backend symlinks currently visible in bin/.
+# Remove any GPU backend symlinks currently visible in bin/. Backend files are
+# named libggml-<vendor>.so (optionally with a build suffix), so match liberally.
 find "$BIN_DIR" -maxdepth 1 -type l \
-  \( -name 'libggml-cuda-*.so' -o -name 'libggml-hip-*.so' -o -name 'libggml-vulkan-*.so' \) \
+  \( -name 'libggml-cuda*.so' -o -name 'libggml-hip*.so' -o -name 'libggml-vulkan*.so' \) \
   -delete 2>/dev/null || true
 
 link_vendor() {

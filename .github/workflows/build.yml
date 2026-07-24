@@ -216,26 +216,21 @@ jobs:
         run: |
           mkdir -p stage
           cp -a build/bin/libggml-hip*.so* stage/ || { echo "libggml-hip backend not produced" >&2; ls build/bin/ | head; exit 1; }
-          # ROCm runtime libs (regenerate with: utils/gather_required_libs.py --rocm-dir /opt/rocm --dest-dir stage)
-          for lib in \
-              libhipblas librocblas libamdhip64 librocsolver libroctx64 libhipblaslt \
-              librocprofiler-register libamd_comgr libamd_comgr_loader libhsa-runtime64 \
-              librocroller librocm_kpack; do
-            cp -a /opt/rocm/lib/${lib}.so* stage/ 2>/dev/null || echo "  (no $lib)"
+          # Auto-discover every ROCm runtime dep of the hip backend with ldd and copy
+          # the real file content under each SONAME name (no symlinks, so
+          # upload-artifact cannot triplicate them). This naturally picks up new
+          # ROCm 7 libs like liborigami without a hardcoded, version-specific list.
+          ldd build/bin/libggml-hip*.so* | awk '/=> \// {print $1, $3}' | sort -u | \
+          while read -r soname path; do
+            case "$path" in
+              /opt/rocm/*) cp -aL "$path" "stage/$soname" 2>/dev/null || true ;;
+            esac
           done
-          for lib in \
-              librocm_sysdeps_liblzma librocm_sysdeps_numa librocm_sysdeps_z \
-              librocm_sysdeps_zstd librocm_sysdeps_elf librocm_sysdeps_drm \
-              librocm_sysdeps_drm_amdgpu librocm_sysdeps_bz2; do
-            cp -a /opt/rocm/lib/rocm_sysdeps/lib/${lib}.so* stage/ 2>/dev/null || echo "  (no $lib)"
-          done
-          cp -a /opt/rocm/lib/llvm/lib/libLLVM.so* stage/ 2>/dev/null || true
-          cp -a /opt/rocm/lib/llvm/lib/libclang-cpp.so* stage/ 2>/dev/null || true
-          # rocblas / hipblaslt kernels (looked up next to their .so at runtime)
+          # rocblas / hipblaslt kernels (data dirs, loaded at runtime next to their .so)
           mkdir -p stage/rocblas/library stage/hipblaslt/library
-          cp -an /opt/rocm/lib/rocblas/library/* stage/rocblas/library/ 2>/dev/null || true
+          cp -an /opt/rocm/lib/rocblas/library/*   stage/rocblas/library/   2>/dev/null || true
           cp -an /opt/rocm/lib/hipblaslt/library/* stage/hipblaslt/library/ 2>/dev/null || true
-          for f in stage/*.so* stage/libggml-hip*.so*; do
+          for f in stage/*.so*; do
             [ -f "$f" ] && [ ! -L "$f" ] && patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true
           done
       - uses: actions/upload-artifact@v4
