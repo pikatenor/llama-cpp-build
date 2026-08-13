@@ -26,9 +26,12 @@ permissions:
 env:
   LLAMA_REPO: ggml-org/llama.cpp
   CUDA_IMAGE: nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
-  # sm52 (Maxwell, e.g. Tesla M60) is deprecated in CUDA 12.8 (warning only) and
-  # removed in CUDA 13; we pin the 12.8.1 image so it still compiles.
-  CUDA_ARCHS: '52-real;75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;100-virtual;120-virtual'
+  # sm50/sm52 (Maxwell v1/v2, e.g. Tesla M10 / Tesla M60) are deprecated in
+  # CUDA 12.8 (warning only) and removed in CUDA 13; we pin the 12.8.1 image so
+  # they still compile. Real (SASS) binaries for the Maxwell floor, because those
+  # cards run drivers too old to JIT the newer -virtual PTX; everything >= sm75
+  # ships as PTX (-virtual) and is JIT'd by the host driver.
+  CUDA_ARCHS: '50-real;52-real;75-virtual;80-virtual;86-virtual;89-virtual;90-virtual;100-virtual;120-virtual'
   ROCM_S3_TARGET: gfx110X-all
   GPU_TARGETS: 'gfx1100;gfx1101;gfx1102;gfx1103'
 
@@ -311,7 +314,7 @@ jobs:
           cat > "$PKG/VERSION.txt" <<EOF
           llama.cpp: ${TAG} (${{ needs.resolve-version.outputs.release_hash }})
           built:     ${RUNNER_OS}/${RUNNER_ARCH} (GitHub Actions)
-          CUDA:      12.8.1 (sm52/75/80/86/89/90/100/120)
+          CUDA:      12.8.1 (sm50/52/75/80/86/89/90/100/120)
           ROCm:      ${ROCM_VERSION:-n/a} (gfx1100/1101/1102/1103)
           Vulkan:    bundled loader (ICD by host driver)
           EOF
@@ -369,7 +372,7 @@ jobs:
             same directory:
 
             - `*-base-linux-x64.tar.gz` — llama-server + CPU backend
-            - `*-cuda-linux-x64.tar.gz` — CUDA 12.8.1 backend (sm52/75/80/86/89/90/100/120) + cuBLAS runtime
+            - `*-cuda-linux-x64.tar.gz` — CUDA 12.8.1 backend (sm50/52/75/80/86/89/90/100/120) + cuBLAS runtime
             - `*-rocm-linux-x64.tar.gz` — ROCm gfx110x backend (gfx1100/1101/1102/1103) + ROCm runtime
             - `*-vulkan-linux-x64.tar.gz` — Vulkan backend + loader
 
