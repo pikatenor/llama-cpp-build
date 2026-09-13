@@ -1,10 +1,11 @@
 name: Build llama.cpp multi-backend
 
 # Auto-builds llama.cpp (latest release tag of ggml-org/llama.cpp) as a single
-# set of binaries with CUDA 12.8.1, ROCm gfx110x and Vulkan backends compiled
-# as SEPARATE dynamic plugins (GGML_BACKEND_DL=ON), then bundles them into one
-# Linux x86_64 tarball published to a GitHub Release. Switch GPU backends at
-# runtime via run.sh <cuda|rocm|vulkan|all> (Ollama-style).
+# set of binaries with CUDA 12.8.1, ROCm gfx110x, ROCm-legacy gfx90x (ROCm
+# 6.1.2) and Vulkan backends compiled as SEPARATE dynamic plugins
+# (GGML_BACKEND_DL=ON), then bundles them into one Linux x86_64 tarball
+# published to a GitHub Release. Switch GPU backends at runtime via
+# run.sh <cuda|rocm|rocm-legacy|vulkan|all> (Ollama-style).
 
 on:
   schedule:
@@ -239,6 +240,44 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: backend-rocm-linux-x64
+          path: stage/
+          retention-days: 3
+
+  # ─────────────────────────── ROCm-legacy backend (gfx90x, ROCm 6.1.2) ───────────────────────────
+  # MI50/Radeon VII (gfx906), MI100 (gfx908) and MI210 (gfx90a) were dropped by
+  # newer ROCm; 6.1.2 is the last line that ships rocBLAS kernels for all three.
+  # Built in the official AMD image (TheRock has no 6.1.x), same docker +
+  # inner-script pattern as build-cuda. Staging runs inside the container
+  # because the host runner has no /opt/rocm.
+  build-rocm-legacy:
+    needs: resolve-version
+    if: needs.resolve-version.outputs.should_build == 'true'
+    runs-on: ubuntu-22.04
+    env:
+      ROCM_LEGACY_IMAGE: rocm/dev-ubuntu-22.04:6.1.2-complete
+      GPU_TARGETS_LEGACY: 'gfx906;gfx908;gfx90a'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: bash scripts/free-disk-space.sh
+      - name: Clone llama.cpp
+        run: |
+          git clone --depth 1 --branch "${{ needs.resolve-version.outputs.release_tag }}" \
+              "https://github.com/${LLAMA_REPO}.git" llama.cpp \
+            || (git clone "https://github.com/${LLAMA_REPO}.git" llama.cpp \
+                && git -C llama.cpp checkout "${{ needs.resolve-version.outputs.release_hash }}")
+      - name: Build ROCm-legacy backend in Docker
+        run: |
+          mkdir -p stage
+          docker run --rm \
+            -v "$PWD":/work -w /work/llama.cpp \
+            -e GPU_TARGETS_LEGACY -e ROCM_STAGE=/work/stage \
+            "${ROCM_LEGACY_IMAGE}" \
+            bash /work/scripts/build-rocm-legacy-inner.sh
+          sudo chown -R "$(id -u):$(id -g)" stage llama.cpp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-rocm-legacy-linux-x64
           path: stage/
           retention-days: 3
 
