@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Backend-selection launcher for the multi-backend llama.cpp package.
 #
-#   ./run.sh <cuda|rocm|vulkan|cpu|all> [llama-server args...]
+#   ./run.sh <cuda|rocm|rocm-legacy|vulkan|cpu|all> [llama-server args...]
 #
 # ggml auto-loads every libggml-*.so it finds next to the executable. This
 # launcher exposes only the requested vendor's backend .so in bin/ (by
@@ -23,7 +23,7 @@ BACKEND_DIR="$SCRIPT_DIR/backends"
 # option or is unknown, fall back to "all" and keep the args.
 vendor="${1:-all}"
 case "$vendor" in
-  cuda|rocm|vulkan|cpu|all) shift || true ;;
+  cuda|rocm|rocm-legacy|vulkan|cpu|all) shift || true ;;
   *) vendor="all" ;;
 esac
 
@@ -44,7 +44,9 @@ link_vendor() {
 }
 
 case "$vendor" in
-  cuda|rocm|vulkan) link_vendor "$vendor" ;;
+  cuda|rocm|rocm-legacy|vulkan) link_vendor "$vendor" ;;
+  # rocm-legacy is intentionally NOT in "all": it ships the same libggml-hip.so
+  # SONAME as rocm, so the two are mutually exclusive — pick one explicitly.
   all) for v in cuda rocm vulkan; do link_vendor "$v"; done ;;
   cpu) ;;  # CPU backend only (already shipped in bin/)
 esac

@@ -6,6 +6,7 @@
 |---|---|---|
 | CUDA 12.8.1 | `nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04` Docker | sm50 / 52 / 75 / 80 / 86 / 89 / 90 / 100 / 120 |
 | ROCm 7 (gfx110x) | TheRock nightly | gfx1100 / gfx1101 / gfx1102 / gfx1103 |
+| ROCm 6.1.2 legacy (gfx90x) | `rocm/dev-ubuntu-22.04:6.1.2-complete` Docker | gfx906 (MI50/Radeon VII) / gfx908 (MI100) / gfx90a (MI210) |
 | Vulkan | Vulkan SDK | (ICD provided by the host GPU driver) |
 | CPU | gcc/clang | `GGML_CPU_ALL_VARIANTS` (runtime auto-selects the best SIMD) |
 
@@ -16,6 +17,7 @@ llama-cpp-build-<tag>-linux-x64/
 ├── backends/
 │   ├── cuda/            # libggml-cuda*.so  + CUDA runtime (cudart/cublas/...)
 │   ├── rocm/            # libggml-hip*.so   + ROCm runtime + rocblas/hipblaslt kernel
+│   ├── rocm-legacy/     # libggml-hip*.so   + ROCm 6.1.2 runtime (MI50/MI100/MI210)
 │   └── vulkan/          # libggml-vulkan*.so + libvulkan.so*
 ├── run.sh
 ├── VERSION.txt
@@ -30,20 +32,23 @@ Each backend ships as a separate release asset (so no single file exceeds GitHub
 tar xzf llama-cpp-build-<tag>-base-linux-x64.tar.gz
 tar xzf llama-cpp-build-<tag>-cuda-linux-x64.tar.gz    # NVIDIA
 tar xzf llama-cpp-build-<tag>-rocm-linux-x64.tar.gz    # AMD gfx110x
+tar xzf llama-cpp-build-<tag>-rocm-legacy-linux-x64.tar.gz  # AMD gfx90x (MI50/MI100/MI210)
 tar xzf llama-cpp-build-<tag>-vulkan-linux-x64.tar.gz  # optional
 cd llama-cpp-build-<tag>-linux-x64
 
 # Start with the chosen backend (arguments are passed directly to llama-server)
-./run.sh cuda    -m model.gguf -ngl 99        # NVIDIA
-./run.sh rocm    -m model.gguf -ngl 99        # AMD gfx110x
-./run.sh vulkan  -m model.gguf -ngl 99        # Vulkan-capable GPU
-./run.sh all     --list-devices               # List available devices (defaults to CPU)
+./run.sh cuda        -m model.gguf -ngl 99    # NVIDIA
+./run.sh rocm        -m model.gguf -ngl 99    # AMD gfx110x
+./run.sh rocm-legacy -m model.gguf -ngl 99    # AMD gfx90x (MI50/MI100/MI210)
+./run.sh vulkan      -m model.gguf -ngl 99    # Vulkan-capable GPU
+./run.sh all         --list-devices           # List available devices (defaults to CPU)
 
 # You can also explicitly specify a device
 ./run.sh all     -m model.gguf --device cuda0 -ngl 99
 ```
 
 `run.sh` only exposes the selected vendor backend .so files in bin/, relying on ggml's behavior of automatically loading backends located in the same directory as the executable.
+`rocm-legacy` must be selected explicitly: it ships the same `libggml-hip.so` SONAME as `rocm`, so the two cannot coexist in `bin/` (and `all` therefore excludes it).
 See [docs/usage.md](docs/usage.md) for details.
 
 ## Build
@@ -51,7 +56,7 @@ See [docs/usage.md](docs/usage.md) for details.
 The workflow `.github/workflows/build.yml` runs the following jobs:
 
 ```
-resolve-version → build-base / build-cuda / build-rocm / build-vulkan → package → release
+resolve-version → build-base / build-cuda / build-rocm / build-rocm-legacy / build-vulkan → package → release
 ```
 
 - Trigger: daily cron at 00:30 UTC, plus manual `workflow_dispatch` from the Actions tab

@@ -17,11 +17,16 @@
 クリーンに使い分けられる。
 
 ```sh
-./run.sh cuda    -m model.gguf -ngl 99 -p "hello"     # NVIDIA GPU
-./run.sh rocm    -m model.gguf -ngl 99 -p "hello"     # AMD gfx110x
-./run.sh vulkan  -m model.gguf -ngl 99 -p "hello"     # Vulkan 対応 GPU
-./run.sh all     -m model.gguf -ngl 99                # bin/ の既定（CPU + 追加済みバックエンド）
+./run.sh cuda        -m model.gguf -ngl 99 -p "hello"   # NVIDIA GPU
+./run.sh rocm        -m model.gguf -ngl 99 -p "hello"   # AMD gfx110x
+./run.sh rocm-legacy -m model.gguf -ngl 99 -p "hello"   # AMD gfx90x（MI50/Radeon VII、MI100、MI210）
+./run.sh vulkan      -m model.gguf -ngl 99 -p "hello"   # Vulkan 対応 GPU
+./run.sh all         -m model.gguf -ngl 99              # bin/ の既定（CPU + 追加済みバックエンド）
 ```
+
+`rocm-legacy` は `all` に含まれない。`rocm` と同じ `libggml-hip.so` の SONAME を持つため
+両者は `bin/` 内で排他であり、明示指定が必要（ROCm 6.1.2 は gfx906/908/90a 向けの
+レガシービルド）。
 
 `run.sh` が行うこと:
 1. `bin/` から一旦 CUDA/ROCm/Vulkan バックエンドの symlink を削除
@@ -56,7 +61,9 @@ export GGML_BACKEND_PATH="$PWD/backends/rocm/libggml-hip-*.so"
 - **バックエンドがロードされない**: `bin/` に `libggml-*.so` が見えるか確認。
   `ldd ./bin/llama-server` で解決できないシンボルがないか確認。
 - **ROCm 版が動かない**: AMD GPU ドライバ/`amdgpu` が実行機に必要（ROCm **ランタイム**は同梱、
-  ドライバは別）。gfx が合っているか確認（`rocminfo | grep gfx`）。
+  ドライバは別）。gfx が合っているか確認（`rocminfo | grep gfx`）。gfx906/908/90a
+  （MI50/Radeon VII、MI100、MI210）の環境では `rocm`（gfx110x 用）ではなく
+  `rocm-legacy` を使うこと。
 - **CUDA 版が動かない**: NVIDIA ドライバが必要（CUDA **ランタイム**は同梱、ドライバは別）。
   CC がビルド対象に含まれているか確認。
 - **Vulkan 版が動かない**: Vulkan 対応ドライバ（ICD）が実行機に必要。`vulkaninfo` で確認。
