@@ -327,7 +327,7 @@ jobs:
 
   # ─────────────────────────── assemble package ───────────────────────────
   package:
-    needs: [resolve-version, build-base, build-cuda, build-rocm, build-vulkan]
+    needs: [resolve-version, build-base, build-cuda, build-rocm, build-rocm-legacy, build-vulkan]
     if: needs.resolve-version.outputs.should_build == 'true'
     runs-on: ubuntu-22.04
     steps:
@@ -339,12 +339,13 @@ jobs:
         run: |
           TAG="${{ needs.resolve-version.outputs.release_tag }}"
           PKG="llama-cpp-build-${TAG}-linux-x64"
-          mkdir -p "$PKG/bin" "$PKG/backends/cuda" "$PKG/backends/rocm" "$PKG/backends/vulkan"
+          mkdir -p "$PKG/bin" "$PKG/backends/cuda" "$PKG/backends/rocm" "$PKG/backends/rocm-legacy" "$PKG/backends/vulkan"
 
-          cp -a artifacts/base-linux-x64/.          "$PKG/bin/"
-          cp -a artifacts/backend-cuda-linux-x64/.   "$PKG/backends/cuda/"
-          cp -a artifacts/backend-rocm-linux-x64/.   "$PKG/backends/rocm/"
-          cp -a artifacts/backend-vulkan-linux-x64/. "$PKG/backends/vulkan/"
+          cp -a artifacts/base-linux-x64/.                "$PKG/bin/"
+          cp -a artifacts/backend-cuda-linux-x64/.         "$PKG/backends/cuda/"
+          cp -a artifacts/backend-rocm-linux-x64/.         "$PKG/backends/rocm/"
+          cp -a artifacts/backend-rocm-legacy-linux-x64/.  "$PKG/backends/rocm-legacy/"
+          cp -a artifacts/backend-vulkan-linux-x64/.       "$PKG/backends/vulkan/"
 
           cp scripts/run.sh "$PKG/run.sh"
           chmod +x "$PKG/run.sh"
@@ -355,6 +356,7 @@ jobs:
           built:     ${RUNNER_OS}/${RUNNER_ARCH} (GitHub Actions)
           CUDA:      12.8.1 (sm50/52/75/80/86/89/90/100/120)
           ROCm:      ${ROCM_VERSION:-n/a} (gfx1100/1101/1102/1103)
+          ROCm-legacy: 6.1.2 (gfx906/gfx908/gfx90a)
           Vulkan:    bundled loader (ICD by host driver)
           EOF
 
@@ -377,6 +379,7 @@ jobs:
           tar -czf "llama-cpp-build-${TAG}-base-linux-x64.tar.gz"   "${PKG}/bin" "${PKG}/run.sh" "${PKG}/VERSION.txt" "${PKG}/README.txt"
           tar -czf "llama-cpp-build-${TAG}-cuda-linux-x64.tar.gz"   "${PKG}/backends/cuda"
           tar -czf "llama-cpp-build-${TAG}-rocm-linux-x64.tar.gz"   "${PKG}/backends/rocm"
+          tar -czf "llama-cpp-build-${TAG}-rocm-legacy-linux-x64.tar.gz" "${PKG}/backends/rocm-legacy"
           tar -czf "llama-cpp-build-${TAG}-vulkan-linux-x64.tar.gz" "${PKG}/backends/vulkan"
           ls -lh llama-cpp-build-*.tar.gz
       - uses: actions/upload-artifact@v4
@@ -401,7 +404,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.resolve-version.outputs.release_tag }}
-          name: llama.cpp ${{ needs.resolve-version.outputs.release_tag }} multi-backend (CUDA+ROCm+Vulkan)
+          name: llama.cpp ${{ needs.resolve-version.outputs.release_tag }} multi-backend (CUDA+ROCm+ROCm-legacy+Vulkan)
           body: |
             Auto-built from [${{ env.LLAMA_REPO }}@${{ needs.resolve-version.outputs.release_tag }}](https://github.com/${{ env.LLAMA_REPO }}/releases/tag/${{ needs.resolve-version.outputs.release_tag }}).
 
@@ -413,6 +416,7 @@ jobs:
             - `*-base-linux-x64.tar.gz` — llama-server + CPU backend
             - `*-cuda-linux-x64.tar.gz` — CUDA 12.8.1 backend (sm50/52/75/80/86/89/90/100/120) + cuBLAS runtime
             - `*-rocm-linux-x64.tar.gz` — ROCm gfx110x backend (gfx1100/1101/1102/1103) + ROCm runtime
+            - `*-rocm-legacy-linux-x64.tar.gz` — ROCm 6.1.2 legacy backend (gfx906 MI50/Radeon VII, gfx908 MI100, gfx90a MI210) + ROCm runtime
             - `*-vulkan-linux-x64.tar.gz` — Vulkan backend + loader
 
             ```sh
@@ -420,9 +424,10 @@ jobs:
             tar xzf llama-cpp-build-$TAG-base-linux-x64.tar.gz
             tar xzf llama-cpp-build-$TAG-cuda-linux-x64.tar.gz    # NVIDIA
             tar xzf llama-cpp-build-$TAG-rocm-linux-x64.tar.gz    # AMD gfx110x
+            tar xzf llama-cpp-build-$TAG-rocm-legacy-linux-x64.tar.gz  # AMD gfx90x (MI50/MI100/MI210)
             tar xzf llama-cpp-build-$TAG-vulkan-linux-x64.tar.gz  # optional
             cd llama-cpp-build-$TAG-linux-x64
-            ./run.sh cuda|rocm|vulkan -m model.gguf -ngl 99
+            ./run.sh cuda|rocm|rocm-legacy|vulkan -m model.gguf -ngl 99
             ./run.sh all --list-devices
             ```
           files: release-assets/*.tar.gz
