@@ -39,7 +39,15 @@ cmake -S . -B build -G Ninja \
   -DGGML_HIP_ROCWMMA_FATTN=OFF -DLLAMA_BUILD_BORINGSSL=ON \
   -DGGML_NATIVE=OFF -DGGML_STATIC=OFF \
   -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
-  -DCMAKE_SYSTEM_NAME=Linux
+  -DCMAKE_SYSTEM_NAME=Linux \
+  -DCMAKE_HIP_FLAGS="-Wno-c++11-narrowing"
+# ^ ROCm 6.1.2's __hip_bfloat16 is a plain aggregate (no float ctor), so
+#   upstream mma.cuh's `nv_bfloat162 x[ne] = {{0.0f, 0.0f}}` is a narrowing
+#   ERROR under the image's clang 17 (newer ROCm added the ctor, which is why
+#   the TheRock ROCm 7 job compiles it fine). 0.0f -> 0 bits is the bf16 zero,
+#   so suppressing the diagnostic is semantically safe. Note CMAKE_CXX_FLAGS
+#   never reaches the HIP-language compiles of the .cu files; only
+#   CMAKE_HIP_FLAGS does.
 
 echo ">>> building"
 cmake --build build --config Release -j"$(nproc)"
